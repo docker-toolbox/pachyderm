@@ -190,7 +190,7 @@ func (s *stm) Put(key, val string, ttl int64, ptr uintptr) error {
 	if ttl > 0 {
 		lease, ok := s.newLeases[ttl]
 		if !ok {
-			span, ctx := tracing.AddSpanToAnyExisting(s.ctx, "etcd.Grant")
+			span, ctx := tracing.AddSpanToAnyExisting(s.ctx, "/etcd/GrantLease")
 			defer tracing.FinishAnySpan(span)
 			leaseResp, err := s.client.Grant(ctx, ttl)
 			if err != nil {
@@ -218,10 +218,11 @@ func (s *stm) Rev(key string) int64 {
 }
 
 func (s *stm) commit() *v3.TxnResponse {
+	span, ctx := tracing.AddSpanToAnyExisting(s.ctx, "/etcd/Txn")
+	tracing.FinishAnySpan(span)
+
 	cmps := s.cmps()
 	puts := s.puts()
-	span, ctx := tracing.AddSpanToAnyExisting(s.ctx, "etcd.Txn")
-	defer tracing.FinishAnySpan(span)
 	txnresp, err := s.client.Txn(ctx).If(cmps...).Then(puts...).Commit()
 	if err == rpctypes.ErrTooManyOps {
 		panic(stmError{
@@ -252,7 +253,8 @@ func (s *stm) fetch(key string) *v3.GetResponse {
 	if resp, ok := s.rset[key]; ok {
 		return resp
 	}
-	span, ctx := tracing.AddSpanToAnyExisting(s.ctx, "etcd.Get")
+
+	span, ctx := tracing.AddSpanToAnyExisting(s.ctx, "/etcd/Get")
 	defer tracing.FinishAnySpan(span)
 	resp, err := s.client.Get(ctx, key, s.getOpts...)
 	if err != nil {
@@ -323,11 +325,19 @@ func (s *stmSerializable) gets() ([]string, []v3.Op) {
 }
 
 func (s *stmSerializable) commit() *v3.TxnResponse {
+	span, ctx := tracing.AddSpanToAnyExisting(s.ctx, "/etcd/Txn")
+	defer tracing.FinishAnySpan(span)
+	if span != nil {
+		keys := make([]byte, 0, 512)
+		for k := range s.wset {
+			keys = append(keys, ',', []byte(k)...)
+		}
+		span.SetTag("updated-keys", string(keys[1:])) // drop leading ','
+	}
+
 	keys, getops := s.gets()
 	cmps := s.cmps()
 	puts := s.puts()
-	span, ctx := tracing.AddSpanToAnyExisting(s.ctx, "etcd.Txn")
-	defer tracing.FinishAnySpan(span)
 	txn := s.client.Txn(ctx).If(cmps...).Then(puts...)
 	// use Else to prefetch keys in case of conflict to save a round trip
 	txnresp, err := txn.Else(getops...).Commit()
@@ -341,6 +351,8 @@ func (s *stmSerializable) commit() *v3.TxnResponse {
 	} else if err != nil {
 		panic(stmError{err})
 	}
+
+	tracing.TagSpan(span, "applied-at-revision", txnresp.Header.Revision)
 	if txnresp.Succeeded {
 		return txnresp
 	}
@@ -404,7 +416,7 @@ func (s *stm) fetchTTL(iface STM, key string) (int64, error) {
 		s.ttlset[key] = 0 // 0 is default value, but now 'ok' will be true on check
 		return 0, nil
 	}
-	span, ctx := tracing.AddSpanToAnyExisting(s.ctx, "etcd.TimeToLive")
+	span, ctx := tracing.AddSpanToAnyExisting(s.ctx, "/etcd/TimeToLive")
 	defer tracing.FinishAnySpan(span)
 	leaseResp, err := s.client.TimeToLive(ctx, leaseID)
 	if err != nil {

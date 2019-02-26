@@ -36,7 +36,10 @@ const pachdTracingEnvVar = "PACH_ENABLE_TRACING"
 // jaegerOnce is used to ensure that the Jaeger tracer is only initialized once
 var jaegerOnce sync.Once
 
-func tagSpan(span opentracing.Span, kvs []interface{}) opentracing.Span {
+func TagSpan(span opentracing.Span, kvs []interface{}) opentracing.Span {
+	if span == nil {
+		return nil
+	}
 	for i := 0; i < len(kvs); i += 2 {
 		if len(kvs) == i+1 {
 			span = span.SetTag("extra", kvs[i]) // likely forgot key or value--best effort
@@ -57,7 +60,7 @@ func tagSpan(span opentracing.Span, kvs []interface{}) opentracing.Span {
 func AddSpanToAnyExisting(ctx context.Context, operation string, kvs ...interface{}) (opentracing.Span, context.Context) {
 	if parentSpan := opentracing.SpanFromContext(ctx); parentSpan != nil {
 		span := opentracing.StartSpan(operation, opentracing.ChildOf(parentSpan.Context()))
-		tagSpan(span, kvs)
+		span = TagSpan(span, kvs)
 		return span, opentracing.ContextWithSpan(ctx, span)
 	}
 	return nil, ctx
@@ -71,10 +74,8 @@ func FinishAnySpan(span opentracing.Span) {
 	}
 }
 
-// InstallJaegerTracerFromEnv installs a Jaeger client as then opentracing
-// global tracer, relying on environment variables to configure the client. It
-// returns the address used to initialize the global tracer, if any
-// initialization occurred
+// InstallJaegerTracerFromEnv installs a Jaeger client as the opentracing global
+// tracer, relying on environment variables to configure the client
 func InstallJaegerTracerFromEnv() {
 	jaegerOnce.Do(func() {
 		jaegerEndpoint, onUserMachine := os.LookupEnv(jaegerEndpointEnvVar)
