@@ -1229,12 +1229,13 @@ func (d *driver) propagateCommit(stm col.STM, branch *pfs.Branch, provenance []*
 	if branch == nil {
 		return fmt.Errorf("cannot propagate nil branch")
 	}
+	var err error
 
 	// 'subvBranchInfos' is the collection of downstream branches that may get a
 	// new commit. Populate subvBranchInfo
 	var subvBranchInfos []*pfs.BranchInfo
 	branchInfo := &pfs.BranchInfo{}
-	if err := d.branches(branch.Repo.Name).ReadWrite(stm).Get(branch.Name, branchInfo); err != nil {
+	if err = d.branches(branch.Repo.Name).ReadWrite(stm).Get(branch.Name, branchInfo); err != nil {
 		return err
 	}
 	subvBranchInfos = append(subvBranchInfos, branchInfo) // add 'branch' itself
@@ -1310,31 +1311,27 @@ nextSubvBranch:
 				}
 			}
 		}
+		// make sure the head commit's provenance is included in the new commit provenance (used for deferred downstream)
 		if head != nil {
-			for _, commitProv := range head.Provenance {
-				commitProvMap[key(commitProv.Commit.ID, commitProv.Branch.Name)] = commitProv
+			for _, prov := range head.Provenance {
+				// resolve the commit provenance in case it is specified as a branch name
+				prov, err = d.resolveCommitProvenance(stm, prov)
+				if err != nil {
+					return err
+				}
+				commitProvMap[key(prov.Commit.ID, prov.Branch.Name)] = prov
 			}
 		}
-
-		// Fill it with the passed in provenance
+		// fill it with the passed in provenance
 		for _, prov := range provenance {
-			// resolve the commit in case the commit is actually a branch name
-			provCommitInfo, err := d.resolveCommit(stm, prov.Commit)
+			// resolve the commit provenance in case it is specified as a branch name
+			prov, err = d.resolveCommitProvenance(stm, prov)
 			if err != nil {
 				return err
 			}
-
-			if prov.Branch == nil {
-				// if the branch isn't specified, default to using the commit's branch
-				prov.Branch = provCommitInfo.Branch
-				// but if the original "commit id" was a branch name, use that as the branch instead
-				if provCommitInfo.Commit.ID != prov.Commit.ID {
-					prov.Branch.Name = prov.Commit.ID
-					prov.Commit = provCommitInfo.Commit
-				}
-			}
-			commitProvMap[key(provCommitInfo.Commit.ID, prov.Branch.Name)] = prov
+			commitProvMap[key(prov.Commit.ID, prov.Branch.Name)] = prov
 		}
+
 		if len(commitProvMap) == 0 {
 			// no input commits to process; don't create a new output commit
 			continue nextSubvBranch
@@ -1366,33 +1363,6 @@ nextSubvBranch:
 			if len(subvBranchHeadInfo.Provenance) >= len(commitProvMap) && headIsSubset {
 				// existing HEAD commit is the same new output commit would be; don't
 				// create new commit
-				continue nextSubvBranch
-			}
-
-			// in the case that this is the same branch that is being propagated, we can simply update the head of the branch with the correct provenance
-			if subvBranch.Repo.Name == branch.Repo.Name && subvBranch.Name == branch.Name {
-				// Set provenance and upstream subvenance (appendSubvenance needs
-				// newCommitInfo.ParentCommit to extend the correct subvenance range)
-				newProvenance := make([]*pfs.CommitProvenance, 0, len(commitProvMap))
-				for _, prov := range commitProvMap {
-					// set provenance of 'newCommit'
-					newProvenance = append(newProvenance, prov)
-					// update subvenance of 'prov'
-					provCommitInfo := &pfs.CommitInfo{}
-					if err := d.commits(prov.Commit.Repo.Name).ReadWrite(stm).Update(prov.Commit.ID, provCommitInfo, func() error {
-						appendSubvenance(provCommitInfo, subvBranchHeadInfo)
-						return nil
-					}); err != nil {
-						return err
-					}
-				}
-				// finally create open 'commit'
-				if err := d.commits(subvBranch.Repo.Name).ReadWrite(stm).Update(subvBranchInfo.Head.ID, subvBranchHeadInfo, func() error {
-					subvBranchHeadInfo.Provenance = newProvenance
-					return nil
-				}); err != nil {
-					return err
-				}
 				continue nextSubvBranch
 			}
 		}
@@ -2119,6 +2089,33 @@ func (d *driver) deleteCommit(pachClient *client.APIClient, userCommit *pfs.Comm
 		}
 	}
 	return nil
+}
+
+// resolveCommitProvenance resolves a user 'commit' (which may
+// be a commit ID or branch reference) to a commit + branch pair interpreted as commit provenance.
+// If a complete commit provenance is passed in it just uses that.
+// It accepts an STM so that it can be used in a transaction and avoids an
+// inconsistent call to d.inspectCommit()
+func (d *driver) resolveCommitProvenance(stm col.STM, userCommitProvenance *pfs.CommitProvenance) (*pfs.CommitProvenance, error) {
+	if userCommitProvenance == nil {
+		return nil, fmt.Errorf("cannot resolve nil commit provenance")
+	}
+	// resolve the commit in case the commit is actually a branch name
+	userCommitProvInfo, err := d.resolveCommit(stm, userCommitProvenance.Commit)
+	if err != nil {
+		return nil, err
+	}
+
+	if userCommitProvenance.Branch == nil {
+		// if the branch isn't specified, default to using the commit's branch
+		userCommitProvenance.Branch = userCommitProvInfo.Branch
+		// but if the original "commit id" was a branch name, use that as the branch instead
+		if userCommitProvInfo.Commit.ID != userCommitProvenance.Commit.ID {
+			userCommitProvenance.Branch.Name = userCommitProvenance.Commit.ID
+			userCommitProvenance.Commit = userCommitProvInfo.Commit
+		}
+	}
+	return userCommitProvenance, nil
 }
 
 // createBranch creates a new branch or updates an existing branch (must be one
