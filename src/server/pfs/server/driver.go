@@ -932,12 +932,21 @@ func (d *driver) makeCommit(pachClient *client.APIClient, ID string, parent *pfs
 				provenanceCount := len(branchInfo.Provenance)
 				for _, p := range branchInfo.Provenance {
 					if p.Repo.Name == ppsconsts.SpecRepo {
-						provenanceCount--
 						break
 					}
 				}
-				if provenanceCount > 0 && treeRef == nil {
-					// return fmt.Errorf("cannot start a commit on an output branch")
+
+				// if the passed in provenance for the commit itself (note the difference from the prev condition)
+				// includes a spec commit, then it was created by pps, and so we want to allow it to commit to output branches
+				hasSpec := false
+				for _, prov := range provenance {
+					if prov.Commit.Repo.Name == ppsconsts.SpecRepo {
+						hasSpec = true
+					}
+				}
+
+				if provenanceCount > 0 && treeRef == nil && !hasSpec {
+					return fmt.Errorf("cannot start a commit on an output branch")
 				}
 				// Point 'branch' at the new commit
 				branchInfo.Name = branch // set in case 'branch' is new
