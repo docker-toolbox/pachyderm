@@ -76,7 +76,7 @@ func testExtractRestore(t *testing.T, testObjects bool) {
 	c := getPachClient(t)
 	require.NoError(t, c.DeleteAll())
 
-	dataRepo := tu.UniqueString("TestExtractRestoreObjects-in-")
+	dataRepo := tu.UniqueString(t.Name() + "Input-")
 	require.NoError(t, c.CreateRepo(dataRepo))
 
 	// Create input data
@@ -121,6 +121,28 @@ func testExtractRestore(t *testing.T, testObjects bool) {
 	commitInfos := collectCommitInfos(t, commitIter)
 	require.Equal(t, numPipelines, len(commitInfos))
 
+	// confirm that all the jobs passed (there may be a short delay between the
+	// job's output commit closing and the job being marked successful, thus retry
+	require.NoErrorWithinTRetry(t, 30*time.Second, func() error {
+		jobInfos, err := c.ListJob("", nil, nil)
+		if err != nil {
+			return err
+		}
+		// Pipelines were created after commits, so only the HEAD commits of the
+		// input repo should be processed by each pipeline
+		if len(jobInfos) != numPipelines {
+			return fmt.Errorf("expected %d commits, but only encountered %d",
+				nCommits*numPipelines, len(jobInfos))
+		}
+		for _, ji := range jobInfos {
+			if ji.State != pps.JobState_JOB_SUCCESS {
+				return fmt.Errorf("expected job %q to be in state SUCCESS but was %q",
+					ji.Job.ID, ji.State.String())
+			}
+		}
+		return nil
+	})
+
 	// Extract existing cluster state
 	ops, err := c.ExtractAll(testObjects)
 	require.NoError(t, err)
@@ -136,27 +158,45 @@ func testExtractRestore(t *testing.T, testObjects bool) {
 	// Restore metadata and possibly objects
 	require.NoError(t, c.Restore(ops))
 
+	// Make sure all commits got re-created
+	require.NoErrorWithinTRetry(t, 30*time.Second, func() error {
+		commitInfos, err := c.ListCommit(dataRepo, "", "", 0)
+		if err != nil {
+			return err
+		}
+		if len(commitInfos) != nCommits {
+			return fmt.Errorf("expected %d commits, but only encountered %d in %q",
+				nCommits, len(commitInfos), dataRepo)
+		}
+		return nil
+	})
+
 	// Wait for re-created pipelines to process recreated input data
 	commitIter, err = c.FlushCommit([]*pfs.Commit{client.NewCommit(dataRepo, "master")}, nil)
 	require.NoError(t, err)
 	commitInfos = collectCommitInfos(t, commitIter)
 	require.Equal(t, numPipelines, len(commitInfos))
 
-	// Make sure recreated jobs all succeeded
-	backoff.Retry(func() error {
-		jis, err := c.ListJob("", nil, nil) // make sure jobs all succeeded
-		require.NoError(t, err)
-		for _, ji := range jis {
-			// race--we may call listJob between when a job's output commit is closed
-			// and when its state is updated
-			if ji.State.String() == "JOB_RUNNING" || ji.State.String() == "JOB_MERGING" {
-				return fmt.Errorf("output commit is closed but job state hasn't been updated")
+	// Confirm all the recreated jobs passed
+	require.NoErrorWithinTRetry(t, 30*time.Second, func() error {
+		jobInfos, err := c.ListJob("", nil, nil)
+		if err != nil {
+			return err
+		}
+		// Extract places commits before pipelines, so that all commits are processed
+		// after Restore() (thus |jobInfos| = nCommits * numPipelines)
+		if len(jobInfos) != nCommits*numPipelines {
+			return fmt.Errorf("expected %d commits, but only encountered %d",
+				nCommits*numPipelines, len(jobInfos))
+		}
+		for _, ji := range jobInfos {
+			if ji.State != pps.JobState_JOB_SUCCESS {
+				return fmt.Errorf("expected job %q to be in state SUCCESS but was %q",
+					ji.Job.ID, ji.State.String())
 			}
-			// Job must ultimately succeed
-			require.Equal(t, "JOB_SUCCESS", ji.State.String())
 		}
 		return nil
-	}, backoff.NewTestingBackOff())
+	})
 
 	// Make sure all branches were recreated
 	bis, err := c.ListBranch(dataRepo)

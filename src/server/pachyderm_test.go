@@ -1529,16 +1529,29 @@ func TestDeletePipeline(t *testing.T) {
 		))
 		time.Sleep(10 * time.Second)
 		// Wait for the pipeline to start running
-		require.NoError(t, backoff.Retry(func() error {
+		require.NoErrorWithinTRetry(t, 90*time.Second, func() error {
+			pipelineInfos, err := c.ListPipeline()
+			if err != nil {
+				return err
+			}
+			// Check number of pipelines
+			names := make([]string, 0, len(pipelineInfos))
+			for _, pi := range pipelineInfos {
+				names = append(names, fmt.Sprintf("(%s, %s)", pi.Pipeline.Name, pi.State))
+			}
+			if len(pipelineInfos) != 2 {
+				return fmt.Errorf("Expected two pipelines, but got: %+v", names)
+			}
+			// make sure second pipeline is running
 			pipelineInfo, err := c.InspectPipeline(pipelines[1])
 			if err != nil {
 				return err
 			}
 			if pipelineInfo.State != pps.PipelineState_PIPELINE_RUNNING {
-				return fmt.Errorf("no running pipeline")
+				return fmt.Errorf("no running pipeline (only %+v)", names)
 			}
 			return nil
-		}, backoff.NewTestingBackOff()))
+		})
 	}
 
 	createPipelines()
@@ -4624,7 +4637,9 @@ func TestGarbageCollection(t *testing.T) {
 
 	// Now stop the pipeline  and GC
 	require.NoError(t, c.StopPipeline(pipeline))
-	require.NoError(t, backoff.Retry(func() error { return c.GarbageCollect(0) }, backoff.NewTestingBackOff()))
+	require.NoErrorWithinTRetry(t, 90*time.Second, func() error {
+		return c.GarbageCollect(0)
+	})
 
 	// Check that data still exists in the input repo
 	var buf bytes.Buffer
@@ -4666,14 +4681,16 @@ func TestGarbageCollection(t *testing.T) {
 
 	// We should've deleted one tag since the functioning pipeline only processed
 	// one datum.
-	// We should've deleted 4 objects: the object referenced by
-	// the tag, the modified "bar" file and both pipelines' specs.
-	objectsAfter = getAllObjects(t, c)
 	tagsAfter = getAllTags(t, c)
-
 	require.Equal(t, 1, len(tagsBefore)-len(tagsAfter))
-	require.True(t, len(objectsAfter) < len(objectsBefore))
-	require.Equal(t, 4, len(objectsBefore)-len(objectsAfter))
+
+	// We should've deleted 3 objects:
+	// - the hashtree referenced by the tag (datum hashtree)
+	// - the hashtree for the output commit (commit hashtree, merged from 1 datum)
+	// - the modified "bar" file
+	// Note that deleting a pipeline doesn't delete the spec commits
+	objectsAfter = getAllObjects(t, c)
+	require.Equal(t, 3, len(objectsBefore)-len(objectsAfter))
 
 	// Now we delete everything.
 	require.NoError(t, c.DeleteAll())
@@ -8682,7 +8699,7 @@ func getObjectCountForRepo(t testing.TB, c *client.APIClient, repo string) int {
 	require.NoError(t, err)
 	repoInfo, err := pachClient.InspectRepo(repo)
 	require.NoError(t, err)
-	activeStat, err := pps_server.CollectActiveObjectsAndTags(context.Background(), c, []*pfs.RepoInfo{repoInfo}, pipelineInfos, 0, "")
+	activeStat, err := pps_server.CollectActiveObjectsAndTags(context.Background(), c.PfsAPIClient, c.ObjectAPIClient, []*pfs.RepoInfo{repoInfo}, pipelineInfos, 0)
 	require.NoError(t, err)
 	return activeStat.NObjects
 }
