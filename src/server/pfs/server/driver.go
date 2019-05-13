@@ -1079,7 +1079,7 @@ func (d *driver) makeCommit(pachClient *client.APIClient, ID string, parent *pfs
 		// We propagate the branch last so propagateCommit can write to the
 		// now-existing commit's subvenance
 		if branch != "" {
-			return d.propagateCommit(stm, client.NewBranch(newCommit.Repo.Name, branch), provenance)
+			return d.propagateCommit(stm, client.NewBranch(newCommit.Repo.Name, branch), true)
 		}
 		return nil
 	}); err != nil {
@@ -1240,7 +1240,7 @@ func (d *driver) writeFinishedCommit(ctx context.Context, commit *pfs.Commit, co
 // starts downstream output commits (which trigger PPS jobs) when new input
 // commits arrive on 'branch', when 'branch's HEAD is deleted, or when 'branch'
 // is newly created (i.e. in CreatePipeline).
-func (d *driver) propagateCommit(stm col.STM, branch *pfs.Branch, provenance []*pfs.CommitProvenance) error {
+func (d *driver) propagateCommit(stm col.STM, branch *pfs.Branch, newCommit bool) error {
 	if branch == nil {
 		return fmt.Errorf("cannot propagate nil branch")
 	}
@@ -1337,15 +1337,6 @@ nextSubvBranch:
 				commitProvMap[key(prov.Commit.ID, prov.Branch.Name)] = prov
 			}
 		}
-		// fill it with the passed in provenance
-		for _, prov := range provenance {
-			// resolve the commit provenance in case it is specified as a branch name
-			prov, err = d.resolveCommitProvenance(stm, prov)
-			if err != nil {
-				return err
-			}
-			commitProvMap[key(prov.Commit.ID, prov.Branch.Name)] = prov
-		}
 
 		if len(commitProvMap) == 0 {
 			// no input commits to process; don't create a new output commit
@@ -1398,9 +1389,8 @@ nextSubvBranch:
 			continue nextSubvBranch
 		}
 
-		// if a commit was just created (provenance != nil only when called by makeCommit)
-		// and this is the same branch as the one being propagated, we don't need to do anything
-		if subvBranch.Repo.Name == branch.Repo.Name && subvBranch.Name == branch.Name && provenance != nil {
+		// if a commit was just created and this is the same branch as the one being propagated, we don't need to do anything
+		if subvBranch.Repo.Name == branch.Repo.Name && subvBranch.Name == branch.Name && newCommit {
 			continue nextSubvBranch
 		}
 
@@ -2092,7 +2082,7 @@ func (d *driver) deleteCommit(pachClient *client.APIClient, userCommit *pfs.Comm
 		// processed yet
 		sort.Slice(affectedBranches, func(i, j int) bool { return len(affectedBranches[i].Provenance) < len(affectedBranches[j].Provenance) })
 		for _, afBranch := range affectedBranches {
-			err = d.propagateCommit(stm, afBranch.Branch, nil)
+			err = d.propagateCommit(stm, afBranch.Branch, false)
 			if err != nil {
 				return err
 			}
@@ -2258,7 +2248,7 @@ func (d *driver) createBranch(pachClient *client.APIClient, branch *pfs.Branch, 
 		// propagate the head commit to 'branch'. This may also modify 'branch', by
 		// creating a new HEAD commit if 'branch's provenance was changed and its
 		// current HEAD commit has old provenance
-		return d.propagateCommit(stm, branch, nil)
+		return d.propagateCommit(stm, branch, false)
 	})
 	return err
 }
