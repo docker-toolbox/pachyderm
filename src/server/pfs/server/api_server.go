@@ -18,6 +18,10 @@ import (
 	"google.golang.org/grpc"
 )
 
+import (
+	opentracing "github.com/opentracing/opentracing-go"
+)
+
 var (
 	grpcErrorf = grpc.Errorf // needed to get passed govet
 )
@@ -263,6 +267,13 @@ func (a *apiServer) CopyFile(ctx context.Context, request *pfs.CopyFileRequest) 
 func (a *apiServer) GetFile(request *pfs.GetFileRequest, apiGetFileServer pfs.API_GetFileServer) (retErr error) {
 	func() { a.Log(request, nil, nil, 0) }()
 	defer func(start time.Time) { a.Log(request, nil, retErr, time.Since(start)) }(time.Now())
+	span := opentracing.SpanFromContext(ctx)
+	if span != nil {
+		span.SetTag("file", fmt.Sprintf("%s@%s:%s", request.File.Commit.Repo.Name, request.File.Commit.ID, request.File.Path))
+		defer func() {
+			span.SetTag("err", retErr)
+		}()
+	}
 
 	file, err := a.driver.getFile(a.env.GetPachClient(apiGetFileServer.Context()), request.File, request.OffsetBytes, request.SizeBytes)
 	if err != nil {
