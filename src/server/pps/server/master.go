@@ -136,7 +136,7 @@ func (a *apiServer) master() {
 
 					// Handle tracing (pipelineRestarted is used to maybe delete trace)
 					if span, ctx = extended.AddPipelineSpanToAnyTrace(oldCtx,
-						a.etcdClient, pipelineName, "/pps.Master/ProcessPipelineUpdate",
+						a.env.GetEtcdClient(), pipelineName, "/pps.Master/ProcessPipelineUpdate",
 						"key-version", event.Ver,
 						"mod-revision", event.Rev,
 						"prev-key", string(event.PrevKey),
@@ -171,17 +171,7 @@ func (a *apiServer) master() {
 						return fmt.Errorf("watch event had no pipelineInfo: %v", err)
 					}
 
-					// If the pipeline has been stopped, delete workers
-					if pipelineInfo.Stopped && pipelineInfo.State != pps.PipelineState_PIPELINE_PAUSED {
-						log.Infof("PPS master: deleting workers for pipeline %s (%s)", pipelineName, pipelinePtr.State.String())
-						if err := a.deleteWorkersForPipeline(pipelineName); err != nil {
-							return err
-						}
-						if err := a.setPipelineState(pachClient, pipelineInfo, pps.PipelineState_PIPELINE_PAUSED, ""); err != nil {
-							return err
-						}
-					}
-
+					// True if the pipeline has a git input
 					var hasGitInput bool
 					pps.VisitInput(pipelineInfo.Input, func(input *pps.Input) {
 						if input.Git != nil {
@@ -529,7 +519,7 @@ func (a *apiServer) deletePipelineResources(ctx context.Context, pipelineName st
 	log.Infof("PPS master: deleting resources for failed pipeline %q", pipelineName)
 	span, ctx := tracing.AddSpanToAnyExisting(ctx, "/pps.Master/DeletePipelineResources", "pipeline", pipelineName)
 	defer func(span opentracing.Span) {
-		tracing.SetTag(span, "err", fmt.Sprintf("%v", retErr))
+		tracing.TagAnySpan(span, "err", fmt.Sprintf("%v", retErr))
 		tracing.FinishAnySpan(span)
 	}(span)
 
@@ -576,7 +566,7 @@ func (a *apiServer) scaleDownWorkersForPipeline(ctx context.Context, pipelineInf
 	log.Infof("scaling down workers for %q", pipelineInfo.Pipeline.Name)
 	span, ctx := tracing.AddSpanToAnyExisting(ctx, "/pps.Master/ScaleDownWorkersForPipeline", "pipeline", pipelineInfo.Pipeline.Name)
 	defer func(span opentracing.Span) {
-		tracing.SetTag(span, "err", fmt.Sprintf("%v", retErr))
+		tracing.TagAnySpan(span, "err", fmt.Sprintf("%v", retErr))
 		tracing.FinishAnySpan(span)
 	}(span)
 
@@ -600,7 +590,7 @@ func (a *apiServer) scaleDownWorkersForPipeline(ctx context.Context, pipelineInf
 func (a *apiServer) scaleUpWorkersForPipeline(ctx context.Context, pipelineInfo *pps.PipelineInfo) (retErr error) {
 	span, ctx := tracing.AddSpanToAnyExisting(ctx, "/pps.Master/ScaleUpWorkersForPipeline", "pipeline", pipelineInfo.Pipeline.Name)
 	defer func(span opentracing.Span) {
-		tracing.SetTag(span, "err", fmt.Sprintf("%v", retErr))
+		tracing.TagAnySpan(span, "err", fmt.Sprintf("%v", retErr))
 		tracing.FinishAnySpan(span)
 	}(span)
 
@@ -640,7 +630,7 @@ func (a *apiServer) setPipelineState(pachClient *client.APIClient, pipelineInfo 
 		pachClient = pachClient.WithCtx(ctx)
 	}
 	defer func(span opentracing.Span) {
-		tracing.SetTag(span, "err", fmt.Sprintf("%v", retErr))
+		tracing.TagAnySpan(span, "err", fmt.Sprintf("%v", retErr))
 		tracing.FinishAnySpan(span)
 	}(span)
 	if span != nil {
@@ -653,7 +643,7 @@ func (a *apiServer) setPipelineState(pachClient *client.APIClient, pipelineInfo 
 		if err := pipelines.Get(pipelineInfo.Pipeline.Name, pipelinePtr); err != nil {
 			return err
 		}
-		tracing.SetTag(span, "old-state", pipelinePtr.State)
+		tracing.TagAnySpan(span, "old-state", pipelinePtr.State)
 		if pipelinePtr.State == pps.PipelineState_PIPELINE_FAILURE {
 			return nil
 		}
@@ -696,7 +686,7 @@ func (a *apiServer) monitorPipeline(pachClient *client.APIClient, pipelineInfo *
 		eg.Go(func() error {
 			return backoff.RetryNotify(func() error {
 				span, ctx := extended.AddPipelineSpanToAnyTrace(pachClient.Ctx(),
-					a.etcdClient, pipelineInfo.Pipeline.Name, "/pps.Master/MonitorPipeline",
+					a.env.GetEtcdClient(), pipelineInfo.Pipeline.Name, "/pps.Master/MonitorPipeline",
 					"standby", pipelineInfo.Standby)
 				if span != nil {
 					pachClient = pachClient.WithCtx(ctx)
@@ -720,7 +710,7 @@ func (a *apiServer) monitorPipeline(pachClient *client.APIClient, pipelineInfo *
 		eg.Go(func() error {
 			return backoff.RetryNotify(func() error {
 				span, ctx := extended.AddPipelineSpanToAnyTrace(pachClient.Ctx(),
-					a.etcdClient, pipelineInfo.Pipeline.Name, "/pps.Master/MonitorPipeline",
+					a.env.GetEtcdClient(), pipelineInfo.Pipeline.Name, "/pps.Master/MonitorPipeline",
 					"standby", pipelineInfo.Standby)
 				if span != nil {
 					pachClient = pachClient.WithCtx(ctx)

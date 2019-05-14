@@ -191,7 +191,7 @@ func AddJobSpanToAnyTrace(ctx context.Context, c *etcd.Client, commit *pfs.Commi
 	// copy 'commit's provenance into a map, to make subset computation simpler
 	provCommits := make(map[string]struct{})
 	for _, c := range commit.Provenance {
-		provCommits[c.ID] = struct{}{}
+		provCommits[c.Commit.ID] = struct{}{}
 	}
 
 	// read all traces associated with 'commit's pipeline (i.e. repo)

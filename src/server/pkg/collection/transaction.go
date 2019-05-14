@@ -330,7 +330,7 @@ func (s *stmSerializable) commit() *v3.TxnResponse {
 	if span != nil {
 		keys := make([]byte, 0, 512)
 		for k := range s.wset {
-			keys = append(keys, ',', []byte(k)...)
+			keys = append(append(keys, ','), k...)
 		}
 		span.SetTag("updated-keys", string(keys[1:])) // drop leading ','
 	}
@@ -352,7 +352,7 @@ func (s *stmSerializable) commit() *v3.TxnResponse {
 		panic(stmError{err})
 	}
 
-	tracing.TagSpan(span, "applied-at-revision", txnresp.Header.Revision)
+	tracing.TagAnySpan(span, "applied-at-revision", txnresp.Header.Revision)
 	if txnresp.Succeeded {
 		return txnresp
 	}

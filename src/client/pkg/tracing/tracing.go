@@ -37,7 +37,8 @@ const pachdTracingEnvVar = "PACH_ENABLE_TRACING"
 // jaegerOnce is used to ensure that the Jaeger tracer is only initialized once
 var jaegerOnce sync.Once
 
-func TagSpan(span opentracing.Span, kvs []interface{}) opentracing.Span {
+// TagAnySpan tags 'span' with 'kvs' (if it's non-nil)
+func TagAnySpan(span opentracing.Span, kvs ...interface{}) opentracing.Span {
 	if span == nil {
 		return nil
 	}
@@ -61,7 +62,7 @@ func TagSpan(span opentracing.Span, kvs []interface{}) opentracing.Span {
 func AddSpanToAnyExisting(ctx context.Context, operation string, kvs ...interface{}) (opentracing.Span, context.Context) {
 	if parentSpan := opentracing.SpanFromContext(ctx); parentSpan != nil {
 		span := opentracing.StartSpan(operation, opentracing.ChildOf(parentSpan.Context()))
-		span = TagSpan(span, kvs)
+		span = TagAnySpan(span, kvs)
 		return span, opentracing.ContextWithSpan(ctx, span)
 	}
 	return nil, ctx
