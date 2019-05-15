@@ -25,6 +25,7 @@ import (
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/sync/semaphore"
 
+	"github.com/davecgh/go-spew/spew"
 	globlib "github.com/gobwas/glob"
 	"github.com/pachyderm/pachyderm/src/client"
 	"github.com/pachyderm/pachyderm/src/client/auth"
@@ -920,12 +921,28 @@ func (d *driver) makeCommit(pachClient *client.APIClient, ID string, parent *pfs
 
 		// create/update 'branch' (if it was set) and set parent.ID (if, in
 		// addition, 'parent.ID' was not set)
+		key := path.Join
+		branchProvMap := make(map[string]bool)
 		if branch != "" {
 			branchInfo := &pfs.BranchInfo{}
 			if err := branches.Upsert(branch, branchInfo, func() error {
 				// validate branch
 				if parent.ID == "" && branchInfo.Head != nil {
 					parent.ID = branchInfo.Head.ID
+				}
+				// include the branch and its provenance in the branch provenance map
+				branchProvMap[key(newCommit.Repo.Name, branch)] = true
+				for _, b := range branchInfo.Provenance {
+					branchProvMap[key(b.Repo.Name, b.Name)] = true
+				}
+				if branchInfo.Head != nil {
+					headCommitInfo := &pfs.CommitInfo{}
+					if err := d.commits(newCommit.Repo.Name).ReadWrite(stm).Get(branchInfo.Head.ID, headCommitInfo); err != nil {
+						return err
+					}
+					for _, prov := range headCommitInfo.Provenance {
+						branchProvMap[key(prov.Branch.Repo.Name, prov.Branch.Name)] = true
+					}
 				}
 				// Don't count the __spec__ repo towards the provenance count
 				// since spouts will have __spec__ as provenance, but need to accept commits
@@ -1062,6 +1079,16 @@ func (d *driver) makeCommit(pachClient *client.APIClient, ID string, parent *pfs
 			if err != nil {
 				return err
 			}
+
+			// ensure the commit provenance is consistent with the branch provenance
+			fmt.Println(key(prov.Branch.Repo.Name, prov.Branch.Name))
+			if len(branchProvMap) != 0 {
+				if !branchProvMap[key(prov.Branch.Repo.Name, prov.Branch.Name)] {
+					spew.Dump(branchProvMap)
+					return fmt.Errorf("the commit provenance contains a branch which the branch is not provenant on")
+				}
+			}
+
 			newCommitInfo.Provenance = append(newCommitInfo.Provenance, prov)
 			provCommitInfo := &pfs.CommitInfo{}
 			if err := d.commits(prov.Commit.Repo.Name).ReadWrite(stm).Update(prov.Commit.ID, provCommitInfo, func() error {
